@@ -5,10 +5,30 @@ mod parser;
 use eframe::{egui, App, CreationContext, Frame};
 use egui::{Color32, ScrollArea, Stroke};
 use egui_extras::{Column, TableBuilder};
-use parser::{parse_log, GpsRecord};
+use parser::{parse_log, parse_slk, GpsRecord};
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{self, Receiver};
-use walkers::{HttpTiles, Map, MapMemory, Plugin, Position, Projector, Tiles};
+use walkers::{HttpTiles, Map, MapMemory, Plugin, Position, Projector, Tiles, TileId};
+use walkers::sources::{Attribution, TileSource};
+
+// CartoDB Voyager tiles — no API key, permissive usage policy
+struct CartoVoyager;
+impl TileSource for CartoVoyager {
+    fn tile_url(&self, tile: TileId) -> String {
+        format!(
+            "https://a.basemaps.cartocdn.com/rastertiles/voyager/{}/{}/{}.png",
+            tile.zoom, tile.x, tile.y
+        )
+    }
+    fn attribution(&self) -> Attribution {
+        Attribution {
+            text: "© OpenStreetMap contributors © CARTO",
+            url: "https://carto.com/attributions",
+            logo_light: None,
+            logo_dark: None,
+        }
+    }
+}
 
 // ── Jump detection ────────────────────────────────────────────────────────────
 
@@ -43,13 +63,13 @@ impl Plugin for Breadcrumbs {
     fn run(
         self: Box<Self>,
         ui: &mut egui::Ui,
-        _response: &egui::Response,
+        response: &egui::Response,
         projector: &Projector,
     ) {
         if self.points.is_empty() {
             return;
         }
-        let painter = ui.painter();
+        let painter = ui.painter().with_clip_rect(response.rect);
         let pts: Vec<egui::Pos2> = self
             .points
             .iter()
@@ -112,7 +132,7 @@ struct GpsApp {
 
 impl GpsApp {
     fn new(cc: &CreationContext<'_>) -> Self {
-        let tiles = HttpTiles::new(walkers::sources::OpenStreetMap, cc.egui_ctx.clone());
+        let tiles = HttpTiles::new(CartoVoyager, cc.egui_ctx.clone());
         Self {
             records: HashMap::new(),
             sorted_ids: Vec::new(),
@@ -120,7 +140,7 @@ impl GpsApp {
             search: String::new(),
             selection: HashSet::new(),
             focused: None,
-            status: "Open a .log file to begin.".into(),
+            status: "Open a .log or .slk file to begin.".into(),
             is_loading: false,
             load_rx: None,
             tiles: Some(tiles),
@@ -134,10 +154,15 @@ impl GpsApp {
         self.is_loading = true;
         self.status = format!("Loading {}…", path);
 
+        let is_slk = path.to_lowercase().ends_with(".slk");
         std::thread::spawn(move || {
             let result = match std::fs::read_to_string(&path) {
                 Ok(text) => {
-                    let (records, stats) = parse_log(&text);
+                    let (records, stats) = if is_slk {
+                        parse_slk(&text)
+                    } else {
+                        parse_log(&text)
+                    };
                     Ok(LoadResult {
                         path,
                         records,
@@ -341,13 +366,17 @@ impl GpsApp {
                 map_scripts.push_str(&format!(
                     r#"(function(){{
   var m=L.map('{map_id}').setView([{clat:.6},{clon:.6}],13);
-  L.tileLayer('https://tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png',{{
-    attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
-    maxZoom:19
+  L.tileLayer('https://{{s}}.basemaps.cartocdn.com/rastertiles/voyager/{{z}}/{{x}}/{{y}}{{r}}.png',{{
+    attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
+    subdomains:'abcd',
+    maxZoom:20
   }}).addTo(m);
   var c={coords_json};
   if(c.length>0){{
     var pl=L.polyline(c,{{color:'#1e6ee6',weight:2.5}}).addTo(m);
+    for(var i=1;i<c.length-1;i++){{
+      L.circleMarker(c[i],{{color:'#ff8c00',fillColor:'#ff8c00',fillOpacity:1,radius:4,weight:1}}).addTo(m);
+    }}
     L.circleMarker(c[0],{{color:'#22cc44',fillColor:'#22cc44',fillOpacity:1,radius:6,weight:2}}).addTo(m);
     if(c.length>1)L.circleMarker(c[c.length-1],{{color:'#dd3333',fillColor:'#dd3333',fillOpacity:1,radius:6,weight:2}}).addTo(m);
     m.fitBounds(pl.getBounds(),{{padding:[20,20]}});
@@ -395,8 +424,8 @@ impl GpsApp {
             let col_dark   = Color::Rgb(Rgb::new(0.10, 0.165, 0.29, None));
             let col_gray   = Color::Rgb(Rgb::new(0.50, 0.50,  0.50, None));
             let col_black  = Color::Rgb(Rgb::new(0.0,  0.0,   0.0,  None));
-            let col_bg     = Color::Rgb(Rgb::new(0.94, 0.96,  0.97, None));
-            let col_border = Color::Rgb(Rgb::new(0.78, 0.83,  0.88, None));
+            let col_bg     = Color::Rgb(Rgb::new(0.86, 0.90,  0.95, None));
+            let col_border = Color::Rgb(Rgb::new(0.45, 0.55,  0.70, None));
             let col_blue   = Color::Rgb(Rgb::new(0.12, 0.43,  0.90, None));
             let col_green  = Color::Rgb(Rgb::new(0.13, 0.80,  0.27, None));
             let col_orange = Color::Rgb(Rgb::new(1.00, 0.55,  0.00, None));
@@ -519,7 +548,7 @@ impl GpsApp {
 
                     lyr.set_fill_color(col_bg.clone());
                     lyr.set_outline_color(col_border.clone());
-                    lyr.set_outline_thickness(0.3);
+                    lyr.set_outline_thickness(0.8);
                     pdf_rect_filled(&lyr, mx, mb, mw, mh);
 
                     if !recs.is_empty() {
@@ -551,13 +580,12 @@ impl GpsApp {
                             lyr.add_line(Line { points: pts, is_closed: false });
                         }
 
-                        // Intermediate dots (stride-limited to ~50 max)
-                        let stride = (recs.len() / 50).max(1);
+                        // Intermediate dots – all points except first and last
                         for (i, r) in recs.iter().enumerate() {
-                            if i == 0 || i == recs.len() - 1 || i % stride != 0 {
+                            if i == 0 || i == recs.len() - 1 {
                                 continue;
                             }
-                            pdf_dot(&lyr, ppx(r.lon), ppy(r.lat), 0.6, col_orange.clone());
+                            pdf_dot(&lyr, ppx(r.lon), ppy(r.lat), 1.0, col_orange.clone());
                         }
                         if let Some(r) = recs.first() {
                             pdf_dot(&lyr, ppx(r.lon), ppy(r.lat), 1.5, col_green.clone());
@@ -720,7 +748,7 @@ impl App for GpsApp {
                 );
                 if open_btn.clicked() {
                     if let Some(p) = rfd::FileDialog::new()
-                        .add_filter("Log / Text files", &["log", "txt"])
+                        .add_filter("GPS files", &["log", "txt", "slk"])
                         .pick_file()
                     {
                         self.start_load(p.display().to_string(), ctx.clone());
