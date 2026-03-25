@@ -1,3 +1,4 @@
+// Created by Owen Hammond & Baker's Communications LLC
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod parser;
@@ -224,8 +225,6 @@ impl GpsApp {
             .map(|v| v.len())
             .sum();
 
-        // CSS – hex values after ':' are fine in r#"..."# raw strings.
-        // Only `attribute="#…"` form (value starts with #) is problematic.
         let style = r#"
             body{font-family:Arial,Helvetica,sans-serif;margin:0;background:#f5f7fa;color:#222}
             header{background:#1a2a4a;color:#fff;padding:18px 32px}
@@ -294,7 +293,6 @@ impl GpsApp {
                     1..=15 => "#c97d10",
                     _ => "#c0392b",
                 };
-                // Anchor built separately to keep "# out of the raw-string literal.
                 let anchor = format!("#src-{id}");
                 html.push_str(&format!(
                     r#"<tr><td><a href="{anchor}">{id}</a></td><td>{fixes}</td><td style="color:{jcol};font-weight:700">{jumps}</td><td>{first_ts}</td><td>{last_ts}</td><td>{last_lat:.6}, {last_lon:.6}</td></tr>
@@ -361,8 +359,6 @@ impl GpsApp {
                 let clat = recs.last().map(|r| r.lat).unwrap_or(0.0);
                 let clon = recs.last().map(|r| r.lon).unwrap_or(0.0);
 
-                // JS uses single-quoted strings → no "# inside this raw-string literal.
-                // {{ / }} in format! produce literal { / } in the output.
                 map_scripts.push_str(&format!(
                     r#"(function(){{
   var m=L.map('{map_id}').setView([{clat:.6},{clon:.6}],13);
@@ -413,7 +409,6 @@ impl GpsApp {
         }
 
         let result: Result<Vec<u8>, String> = (|| {
-            // Convenience: Mm takes f32; define a cast helper used throughout.
             let mm = |v: f64| Mm(v as f32);
 
             let (doc, pg0, ly0) =
@@ -569,7 +564,6 @@ impl GpsApp {
                         let ppx = |lon: f64| ox + (lon - min_lon) * sc;
                         let ppy = |lat: f64| oy + (lat - min_lat) * sc;
 
-                        // Polyline
                         if recs.len() > 1 {
                             lyr.set_outline_color(col_blue.clone());
                             lyr.set_outline_thickness(0.4);
@@ -759,7 +753,6 @@ impl App for GpsApp {
                 let has_data = !self.is_loading && !self.sorted_ids.is_empty();
                 let has_sel  = !self.is_loading && !self.selection.is_empty();
 
-                // HTML report buttons
                 if ui.add_enabled(has_data, egui::Button::new("🌐 HTML – All")).clicked() {
                     let ids = self.sorted_ids.clone();
                     self.build_html_report(ids);
@@ -771,7 +764,6 @@ impl App for GpsApp {
 
                 ui.separator();
 
-                // PDF report buttons
                 if ui.add_enabled(has_data, egui::Button::new("📄 PDF – All")).clicked() {
                     let ids = self.sorted_ids.clone();
                     self.build_pdf_report(ids);
@@ -837,7 +829,6 @@ impl App for GpsApp {
                     .cloned()
                     .collect();
 
-                // Selection count hint
                 let sel_count = self.selection.len();
                 let shown_str = format!("{} / {} shown", filtered.len(), self.sorted_ids.len());
                 let sel_str = if sel_count > 0 {
@@ -880,14 +871,12 @@ impl App for GpsApp {
                                 .clicked()
                             {
                                 if ctrl_held {
-                                    // Toggle membership in selection
                                     if self.selection.contains(id) {
                                         self.selection.remove(id);
                                     } else {
                                         self.selection.insert(id.clone());
                                     }
                                 } else {
-                                    // Plain click: replace selection
                                     self.selection.clear();
                                     self.selection.insert(id.clone());
                                 }
