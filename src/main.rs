@@ -56,6 +56,41 @@ fn jump_color(jumps: usize) -> Color32 {
 
 // ── Breadcrumb map plugin (egui live map) ─────────────────────────────────────
 
+/// Interpolate color along gradient from blue (start) → cyan → green → yellow → orange → red (end)
+fn interpolate_color(progress: f32) -> Color32 {
+    let p = progress.clamp(0.0, 1.0);
+    
+    if p < 0.25 {
+        // Blue to Cyan
+        let t = p / 0.25;
+        let r = (30.0 * (1.0 - t)) as u8;
+        let g = (110.0 + 145.0 * t) as u8;
+        let b = (230.0 + 25.0 * t) as u8;
+        Color32::from_rgb(r, g, b)
+    } else if p < 0.5 {
+        // Cyan to Green
+        let t = (p - 0.25) / 0.25;
+        let r = 30 - (30 as i32 * t as i32) as u8;
+        let g = 255;
+        let b = (255.0 - 130.0 * t) as u8;
+        Color32::from_rgb(r, g, b)
+    } else if p < 0.75 {
+        // Green to Orange
+        let t = (p - 0.5) / 0.25;
+        let r = (255.0 * t) as u8;
+        let g = (255.0 * (1.0 - t * 0.45)) as u8;
+        let b = 0;
+        Color32::from_rgb(r, g, b)
+    } else {
+        // Orange to Red
+        let t = (p - 0.75) / 0.25;
+        let r = 255;
+        let g = (140.0 * (1.0 - t)) as u8;
+        let b = 0;
+        Color32::from_rgb(r, g, b)
+    }
+}
+
 struct Breadcrumbs {
     points: Vec<(f64, f64)>,
 }
@@ -80,8 +115,31 @@ impl Plugin for Breadcrumbs {
             })
             .collect();
 
-        for w in pts.windows(2) {
-            painter.line_segment([w[0], w[1]], Stroke::new(2.5, Color32::from_rgb(30, 110, 230)));
+        // Draw line segments with gradient coloring based on progress
+        for (seg_idx, w) in pts.windows(2).enumerate() {
+            let progress_start = seg_idx as f32 / pts.len() as f32;
+            let progress_end = (seg_idx + 1) as f32 / pts.len() as f32;
+            let progress_range = progress_end - progress_start;
+            
+            // Draw line in small segments to show gradient
+            let num_subdivisions = 8;
+            for sub in 0..num_subdivisions {
+                let t0 = sub as f32 / num_subdivisions as f32;
+                let t1 = (sub + 1) as f32 / num_subdivisions as f32;
+                
+                let p0 = egui::pos2(
+                    w[0].x + (w[1].x - w[0].x) * t0,
+                    w[0].y + (w[1].y - w[0].y) * t0,
+                );
+                let p1 = egui::pos2(
+                    w[0].x + (w[1].x - w[0].x) * t1,
+                    w[0].y + (w[1].y - w[0].y) * t1,
+                );
+                
+                let sub_progress = progress_start + progress_range * t0;
+                let color = interpolate_color(sub_progress);
+                painter.line_segment([p0, p1], Stroke::new(2.5, color));
+            }
         }
         let n = pts.len();
         for (i, &pt) in pts.iter().enumerate() {
@@ -361,6 +419,26 @@ impl GpsApp {
 
                 map_scripts.push_str(&format!(
                     r#"(function(){{
+  function interpolateColor(progress){{
+    var p=Math.max(0,Math.min(1,progress));
+    if(p<0.25){{
+      var t=p/0.25;
+      var r=Math.round(30*(1-t)),g=Math.round(110+145*t),b=Math.round(230+25*t);
+      return 'rgb('+r+','+g+','+b+')';
+    }}else if(p<0.5){{
+      var t=(p-0.25)/0.25;
+      var r=Math.round(30*(1-t)),g=255,b=Math.round(255-130*t);
+      return 'rgb('+r+','+g+','+b+')';
+    }}else if(p<0.75){{
+      var t=(p-0.5)/0.25;
+      var r=Math.round(255*t),g=Math.round(255*(1-t*0.45)),b=0;
+      return 'rgb('+r+','+g+','+b+')';
+    }}else{{
+      var t=(p-0.75)/0.25;
+      var r=255,g=Math.round(140*(1-t)),b=0;
+      return 'rgb('+r+','+g+','+b+')';
+    }}
+  }}
   var m=L.map('{map_id}').setView([{clat:.6},{clon:.6}],13);
   L.tileLayer('https://{{s}}.basemaps.cartocdn.com/rastertiles/voyager/{{z}}/{{x}}/{{y}}{{r}}.png',{{
     attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
@@ -369,12 +447,17 @@ impl GpsApp {
   }}).addTo(m);
   var c={coords_json};
   if(c.length>0){{
-    var pl=L.polyline(c,{{color:'#1e6ee6',weight:2.5}}).addTo(m);
+    for(var i=0;i<c.length-1;i++){{
+      var progress=i/(c.length-1);
+      var color=interpolateColor(progress);
+      L.polyline([c[i],c[i+1]],{{color:color,weight:2.5}}).addTo(m);
+    }}
     for(var i=1;i<c.length-1;i++){{
       L.circleMarker(c[i],{{color:'#ff8c00',fillColor:'#ff8c00',fillOpacity:1,radius:4,weight:1}}).addTo(m);
     }}
     L.circleMarker(c[0],{{color:'#22cc44',fillColor:'#22cc44',fillOpacity:1,radius:6,weight:2}}).addTo(m);
     if(c.length>1)L.circleMarker(c[c.length-1],{{color:'#dd3333',fillColor:'#dd3333',fillOpacity:1,radius:6,weight:2}}).addTo(m);
+    var pl=L.polyline(c,{{color:'transparent',weight:0}});
     m.fitBounds(pl.getBounds(),{{padding:[20,20]}});
   }}
 }})();
