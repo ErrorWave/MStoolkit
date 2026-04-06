@@ -785,6 +785,97 @@ impl GpsApp {
                         pdf_dot(&lyr, mx + 62.0, leg_y, 0.9, col_orange.clone());
                         lyr.use_text("Intermediate", 6.5, mm(mx + 64.5), mm(leg_y - 1.2), &font_reg);
                     }
+
+                    // ── Full-page track map ───────────────────────────────────
+                    {
+                        let (map_pg, map_ly) = doc.add_page(mm(210.0), mm(297.0), "Track Map");
+                        let lyr = doc.get_page(map_pg).get_layer(map_ly);
+
+                        lyr.set_fill_color(col_dark.clone());
+                        lyr.use_text(
+                            &format!("Track Map — Source ID: {id}"),
+                            14.0, mm(15.0), mm(278.0), &font_bold,
+                        );
+                        lyr.set_fill_color(col_gray.clone());
+                        lyr.use_text(
+                            &format!("{} fixes  |  {} — {}", recs.len(), first_ts, last_ts),
+                            8.5, mm(15.0), mm(271.5), &font_reg,
+                        );
+                        pdf_hline(&lyr, 15.0, 268.5, 195.0, col_border.clone());
+
+                        // Large map box
+                        let tmx = 15.0_f64;
+                        let tmw = 180.0_f64;
+                        let tmt = 265.0_f64;
+                        let tmh = 215.0_f64;
+                        let tmb = tmt - tmh; // 50.0
+
+                        lyr.set_fill_color(col_bg.clone());
+                        lyr.set_outline_color(col_border.clone());
+                        lyr.set_outline_thickness(0.8);
+                        pdf_rect_filled(&lyr, tmx, tmb, tmw, tmh);
+
+                        if !recs.is_empty() {
+                            let pad = 8.0_f64;
+                            let dw  = tmw - pad * 2.0;
+                            let dh  = tmh - pad * 2.0;
+
+                            let min_lat = recs.iter().map(|r| r.lat).fold(f64::INFINITY,     f64::min);
+                            let max_lat = recs.iter().map(|r| r.lat).fold(f64::NEG_INFINITY, f64::max);
+                            let min_lon = recs.iter().map(|r| r.lon).fold(f64::INFINITY,     f64::min);
+                            let max_lon = recs.iter().map(|r| r.lon).fold(f64::NEG_INFINITY, f64::max);
+                            let lat_s = (max_lat - min_lat).max(1e-5);
+                            let lon_s = (max_lon - min_lon).max(1e-5);
+                            let sc  = (dw / lon_s).min(dh / lat_s);
+                            let tox = tmx + pad + (dw - lon_s * sc) / 2.0;
+                            let toy = tmb + pad + (dh - lat_s * sc) / 2.0;
+                            let tppx = |lon: f64| tox + (lon - min_lon) * sc;
+                            let tppy = |lat: f64| toy + (lat - min_lat) * sc;
+
+                            // Gradient track: one colored segment per GPS step
+                            if recs.len() > 1 {
+                                let n = recs.len();
+                                for i in 0..n - 1 {
+                                    let progress = i as f32 / (n - 1) as f32;
+                                    let (cr, cg, cb) = pdf_gradient_rgb(progress);
+                                    lyr.set_outline_color(Color::Rgb(Rgb::new(cr, cg, cb, None)));
+                                    lyr.set_outline_thickness(0.6);
+                                    lyr.add_line(Line {
+                                        points: vec![
+                                            (Point::new(mm(tppx(recs[i].lon)),   mm(tppy(recs[i].lat))),   false),
+                                            (Point::new(mm(tppx(recs[i+1].lon)), mm(tppy(recs[i+1].lat))), false),
+                                        ],
+                                        is_closed: false,
+                                    });
+                                }
+                            }
+
+                            // Intermediate dots
+                            for (i, r) in recs.iter().enumerate() {
+                                if i == 0 || i == recs.len() - 1 { continue; }
+                                pdf_dot(&lyr, tppx(r.lon), tppy(r.lat), 0.8, col_orange.clone());
+                            }
+                            if let Some(r) = recs.first() {
+                                pdf_dot(&lyr, tppx(r.lon), tppy(r.lat), 2.0, col_green.clone());
+                            }
+                            if recs.len() > 1 {
+                                if let Some(r) = recs.last() {
+                                    pdf_dot(&lyr, tppx(r.lon), tppy(r.lat), 2.0, col_red.clone());
+                                }
+                            }
+
+                            // Legend
+                            let leg2_y = tmb - 6.0;
+                            pdf_dot(&lyr, tmx + 3.0,  leg2_y, 1.5, col_green.clone());
+                            lyr.set_fill_color(col_gray.clone());
+                            lyr.use_text("First fix",    7.0, mm(tmx + 6.5),  mm(leg2_y - 1.5), &font_reg);
+                            pdf_dot(&lyr, tmx + 38.0, leg2_y, 1.5, col_red.clone());
+                            lyr.use_text("Latest fix",   7.0, mm(tmx + 41.5), mm(leg2_y - 1.5), &font_reg);
+                            pdf_dot(&lyr, tmx + 78.0, leg2_y, 1.2, col_orange.clone());
+                            lyr.use_text("Intermediate", 7.0, mm(tmx + 81.5), mm(leg2_y - 1.5), &font_reg);
+                            lyr.use_text("Track: start (blue) \u{2192} end (red)", 7.0, mm(tmx + 107.0), mm(leg2_y - 1.5), &font_reg);
+                        }
+                    }
                 }
             }
 
@@ -840,6 +931,9 @@ impl GpsApp {
                 kml.push_str(&format!(
                     "  <Style id=\"track{i}\">\n    <LineStyle><color>{col}</color><width>2</width></LineStyle>\n    <IconStyle><color>{col}</color><scale>0.8</scale></IconStyle>\n  </Style>\n"
                 ));
+                kml.push_str(&format!(
+                    "  <Style id=\"waypoint{i}\">\n    <IconStyle><color>{col}</color><scale>0.5</scale></IconStyle>\n  </Style>\n"
+                ));
             }
 
             for (idx, id) in ids.iter().enumerate() {
@@ -861,6 +955,15 @@ impl GpsApp {
                         if let Some(r) = recs.first() {
                             kml.push_str(&format!(
                                 "    <Placemark>\n      <name>First Fix</name>\n      <description>{}</description>\n      <styleUrl>#track{ci}</styleUrl>\n      <Point><coordinates>{:.6},{:.6},0</coordinates></Point>\n    </Placemark>\n",
+                                r.timestamp, r.lon, r.lat
+                            ));
+                        }
+
+                        // Intermediate fix placemarks
+                        for (j, r) in recs.iter().enumerate().skip(1) {
+                            if j == recs.len() - 1 { continue; }
+                            kml.push_str(&format!(
+                                "    <Placemark>\n      <name>Waypoint {j}</name>\n      <description>{}</description>\n      <styleUrl>#waypoint{ci}</styleUrl>\n      <Point><coordinates>{:.6},{:.6},0</coordinates></Point>\n    </Placemark>\n",
                                 r.timestamp, r.lon, r.lat
                             ));
                         }
@@ -987,6 +1090,24 @@ fn pdf_dot(
         mode: PolygonMode::Fill,
         winding_order: WindingOrder::NonZero,
     });
+}
+
+/// Returns (r, g, b) ∈ 0.0–1.0 for the blue→cyan→green→orange→red gradient.
+fn pdf_gradient_rgb(progress: f32) -> (f32, f32, f32) {
+    let p = progress.clamp(0.0, 1.0);
+    if p < 0.25 {
+        let t = p / 0.25;
+        (30.0 * (1.0 - t) / 255.0, (110.0 + 145.0 * t) / 255.0, (230.0 + 25.0 * t) / 255.0)
+    } else if p < 0.5 {
+        let t = (p - 0.25) / 0.25;
+        (30.0 * (1.0 - t) / 255.0, 1.0, (255.0 - 130.0 * t) / 255.0)
+    } else if p < 0.75 {
+        let t = (p - 0.5) / 0.25;
+        (t, (255.0 * (1.0 - t * 0.45)) / 255.0, 0.0)
+    } else {
+        let t = (p - 0.75) / 0.25;
+        (1.0, 140.0 * (1.0 - t) / 255.0, 0.0)
+    }
 }
 
 // ── Pre-extracted stats (avoids borrow conflicts in egui closures) ─────────────
