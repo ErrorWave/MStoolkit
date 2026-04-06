@@ -573,6 +573,108 @@ impl GpsApp {
                 }
             }
 
+            // ── Overview map page ─────────────────────────────────────────────
+            {
+                let ov_colors: [Color; 8] = [
+                    Color::Rgb(Rgb::new(0.27, 0.53, 0.99, None)),
+                    Color::Rgb(Rgb::new(0.13, 0.80, 0.27, None)),
+                    Color::Rgb(Rgb::new(0.87, 0.20, 0.20, None)),
+                    Color::Rgb(Rgb::new(1.00, 0.55, 0.00, None)),
+                    Color::Rgb(Rgb::new(0.60, 0.10, 0.80, None)),
+                    Color::Rgb(Rgb::new(0.00, 0.80, 0.80, None)),
+                    Color::Rgb(Rgb::new(0.80, 0.80, 0.00, None)),
+                    Color::Rgb(Rgb::new(0.80, 0.00, 0.80, None)),
+                ];
+
+                let (ov_pg, ov_ly) = doc.add_page(mm(210.0), mm(297.0), "Overview Map");
+                let lyr = doc.get_page(ov_pg).get_layer(ov_ly);
+
+                lyr.set_fill_color(col_dark.clone());
+                lyr.use_text("Overview Map — All Source IDs", 16.0, mm(15.0), mm(275.0), &font_bold);
+                lyr.set_fill_color(col_gray.clone());
+                lyr.use_text(
+                    &format!("{} source ID(s)  |  combined track view", ids.len()),
+                    9.0, mm(15.0), mm(268.5), &font_reg,
+                );
+                pdf_hline(&lyr, 15.0, 265.5, 195.0, col_border.clone());
+
+                let mut glob_min_lat = f64::INFINITY;
+                let mut glob_max_lat = f64::NEG_INFINITY;
+                let mut glob_min_lon = f64::INFINITY;
+                let mut glob_max_lon = f64::NEG_INFINITY;
+                let mut has_any = false;
+                for id in &ids {
+                    if let Some(recs) = self.records.get(id) {
+                        for r in recs {
+                            glob_min_lat = glob_min_lat.min(r.lat);
+                            glob_max_lat = glob_max_lat.max(r.lat);
+                            glob_min_lon = glob_min_lon.min(r.lon);
+                            glob_max_lon = glob_max_lon.max(r.lon);
+                            has_any = true;
+                        }
+                    }
+                }
+
+                let mx = 15.0_f64;
+                let mw = 180.0_f64;
+                let mt = 262.0_f64;
+                let mh = 205.0_f64;
+                let mb = mt - mh; // 57.0
+
+                lyr.set_fill_color(col_bg.clone());
+                lyr.set_outline_color(col_border.clone());
+                lyr.set_outline_thickness(0.8);
+                pdf_rect_filled(&lyr, mx, mb, mw, mh);
+
+                if has_any {
+                    let pad = 6.0_f64;
+                    let dw  = mw - pad * 2.0;
+                    let dh  = mh - pad * 2.0;
+                    let lat_s = (glob_max_lat - glob_min_lat).max(1e-5);
+                    let lon_s = (glob_max_lon - glob_min_lon).max(1e-5);
+                    let sc = (dw / lon_s).min(dh / lat_s);
+                    let ox = mx + pad + (dw - lon_s * sc) / 2.0;
+                    let oy = mb + pad + (dh - lat_s * sc) / 2.0;
+                    let ppx = |lon: f64| ox + (lon - glob_min_lon) * sc;
+                    let ppy = |lat: f64| oy + (lat - glob_min_lat) * sc;
+
+                    for (idx, id) in ids.iter().enumerate() {
+                        if let Some(recs) = self.records.get(id) {
+                            let col = ov_colors[idx % 8].clone();
+                            if recs.len() > 1 {
+                                lyr.set_outline_color(col.clone());
+                                lyr.set_outline_thickness(0.5);
+                                let pts: Vec<(Point, bool)> = recs.iter()
+                                    .map(|r| (Point::new(mm(ppx(r.lon)), mm(ppy(r.lat))), false))
+                                    .collect();
+                                lyr.add_line(Line { points: pts, is_closed: false });
+                            }
+                            if let Some(r) = recs.last() {
+                                pdf_dot(&lyr, ppx(r.lon), ppy(r.lat), 1.0, col);
+                            }
+                        }
+                    }
+
+                    // Legend: up to 16 entries in two rows of 8
+                    for (idx, id) in ids.iter().enumerate().take(16) {
+                        let col = ov_colors[idx % 8].clone();
+                        let row_x = mx + (idx % 8) as f64 * 22.0;
+                        let row_y = mb - 5.5 - (idx / 8) as f64 * 5.0;
+                        pdf_dot(&lyr, row_x + 1.5, row_y, 1.0, col);
+                        lyr.set_fill_color(col_gray.clone());
+                        let lbl = if id.len() > 10 { &id[..10] } else { id.as_str() };
+                        lyr.use_text(lbl, 5.5, mm(row_x + 4.0), mm(row_y - 1.0), &font_reg);
+                    }
+                    if ids.len() > 16 {
+                        lyr.set_fill_color(col_gray.clone());
+                        lyr.use_text(
+                            &format!("… and {} more", ids.len() - 16),
+                            5.5, mm(mx), mm(mb - 16.5), &font_reg,
+                        );
+                    }
+                }
+            }
+
             // ── Per-ID pages ──────────────────────────────────────────────────
             for id in &ids {
                 if let Some(recs) = self.records.get(id) {
@@ -700,6 +802,109 @@ impl GpsApp {
                     match std::fs::write(&path, &bytes) {
                         Ok(()) => self.status = format!("PDF saved → {}", path.display()),
                         Err(e) => self.status = format!("Failed to save PDF: {e}"),
+                    }
+                }
+            }
+        }
+    }
+
+    // ── KMZ export ────────────────────────────────────────────────────────────
+
+    fn build_kmz_export(&mut self, ids: Vec<String>) {
+        use std::io::Write;
+
+        if ids.is_empty() {
+            return;
+        }
+
+        // KML colors: AABBGGRR format (alpha, blue, green, red)
+        let kml_colors = [
+            "fffc8645", // blue
+            "ff45cc22", // green
+            "ff3333de", // red
+            "ff008cff", // orange
+            "ffcc1a99", // purple
+            "ffcccc00", // cyan
+            "ff00cccc", // yellow
+            "ffcc00cc", // magenta
+        ];
+
+        let result: Result<Vec<u8>, String> = (|| {
+            let mut kml = String::new();
+            kml.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+            kml.push_str("<kml xmlns=\"http://www.opengis.net/kml/2.2\">\n");
+            kml.push_str("<Document>\n");
+            kml.push_str("  <name>GPS Log Report</name>\n");
+
+            for (i, col) in kml_colors.iter().enumerate() {
+                kml.push_str(&format!(
+                    "  <Style id=\"track{i}\">\n    <LineStyle><color>{col}</color><width>2</width></LineStyle>\n    <IconStyle><color>{col}</color><scale>0.8</scale></IconStyle>\n  </Style>\n"
+                ));
+            }
+
+            for (idx, id) in ids.iter().enumerate() {
+                if let Some(recs) = self.records.get(id) {
+                    let ci = idx % kml_colors.len();
+                    kml.push_str(&format!("  <Folder>\n    <name>Source ID: {id}</name>\n"));
+
+                    if !recs.is_empty() {
+                        // Track line
+                        kml.push_str(&format!(
+                            "    <Placemark>\n      <name>Track</name>\n      <styleUrl>#track{ci}</styleUrl>\n      <LineString>\n        <tessellate>1</tessellate>\n        <coordinates>\n"
+                        ));
+                        for r in recs {
+                            kml.push_str(&format!("          {:.6},{:.6},0\n", r.lon, r.lat));
+                        }
+                        kml.push_str("        </coordinates>\n      </LineString>\n    </Placemark>\n");
+
+                        // First fix placemark
+                        if let Some(r) = recs.first() {
+                            kml.push_str(&format!(
+                                "    <Placemark>\n      <name>First Fix</name>\n      <description>{}</description>\n      <styleUrl>#track{ci}</styleUrl>\n      <Point><coordinates>{:.6},{:.6},0</coordinates></Point>\n    </Placemark>\n",
+                                r.timestamp, r.lon, r.lat
+                            ));
+                        }
+
+                        // Last fix placemark
+                        if recs.len() > 1 {
+                            if let Some(r) = recs.last() {
+                                kml.push_str(&format!(
+                                    "    <Placemark>\n      <name>Last Fix</name>\n      <description>{}</description>\n      <styleUrl>#track{ci}</styleUrl>\n      <Point><coordinates>{:.6},{:.6},0</coordinates></Point>\n    </Placemark>\n",
+                                    r.timestamp, r.lon, r.lat
+                                ));
+                            }
+                        }
+                    }
+
+                    kml.push_str("  </Folder>\n");
+                }
+            }
+
+            kml.push_str("</Document>\n</kml>");
+
+            let mut buf = std::io::Cursor::new(Vec::<u8>::new());
+            {
+                let mut zip = zip::ZipWriter::new(&mut buf);
+                let options = zip::write::FileOptions::default()
+                    .compression_method(zip::CompressionMethod::Deflated);
+                zip.start_file("doc.kml", options).map_err(|e| e.to_string())?;
+                zip.write_all(kml.as_bytes()).map_err(|e| e.to_string())?;
+                zip.finish().map_err(|e| e.to_string())?;
+            }
+            Ok(buf.into_inner())
+        })();
+
+        match result {
+            Err(e) => self.status = format!("KMZ build error: {e}"),
+            Ok(bytes) => {
+                if let Some(path) = rfd::FileDialog::new()
+                    .add_filter("KMZ", &["kmz"])
+                    .set_file_name("gps_export.kmz")
+                    .save_file()
+                {
+                    match std::fs::write(&path, &bytes) {
+                        Ok(()) => self.status = format!("KMZ saved → {}", path.display()),
+                        Err(e) => self.status = format!("Failed to save KMZ: {e}"),
                     }
                 }
             }
@@ -854,6 +1059,17 @@ impl App for GpsApp {
                 if ui.add_enabled(has_sel, egui::Button::new("📄 PDF – Sel")).clicked() {
                     let ids = self.selected_ids_sorted();
                     self.build_pdf_report(ids);
+                }
+
+                ui.separator();
+
+                if ui.add_enabled(has_data, egui::Button::new("🗺 KMZ – All")).clicked() {
+                    let ids = self.sorted_ids.clone();
+                    self.build_kmz_export(ids);
+                }
+                if ui.add_enabled(has_sel, egui::Button::new("🗺 KMZ – Sel")).clicked() {
+                    let ids = self.selected_ids_sorted();
+                    self.build_kmz_export(ids);
                 }
 
                 ui.separator();
