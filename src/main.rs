@@ -4,7 +4,7 @@
 mod parser;
 
 use eframe::{egui, App, CreationContext, Frame};
-use egui::{Color32, ScrollArea, Stroke};
+use egui::{Color32, ScrollArea, Stroke, Visuals};
 use egui_extras::{Column, TableBuilder};
 use parser::{parse_log, parse_slk, GpsRecord};
 use std::collections::{HashMap, HashSet};
@@ -12,23 +12,77 @@ use std::sync::mpsc::{self, Receiver};
 use walkers::{HttpTiles, Map, MapMemory, Plugin, Position, Projector, Tiles, TileId};
 use walkers::sources::{Attribution, TileSource};
 
-// CartoDB Voyager tiles — no API key, permissive usage policy
-struct CartoVoyager;
-impl TileSource for CartoVoyager {
+// OpenStreetMap tiles
+struct OpenStreetMapTiles;
+impl TileSource for OpenStreetMapTiles {
     fn tile_url(&self, tile: TileId) -> String {
         format!(
-            "https://a.basemaps.cartocdn.com/rastertiles/voyager/{}/{}/{}.png",
+            "https://tile.openstreetmap.org/{}/{}/{}.png",
             tile.zoom, tile.x, tile.y
         )
     }
     fn attribution(&self) -> Attribution {
         Attribution {
-            text: "© OpenStreetMap contributors © CARTO",
-            url: "https://carto.com/attributions",
+            text: "© OpenStreetMap contributors",
+            url: "https://www.openstreetmap.org/copyright",
             logo_light: None,
             logo_dark: None,
         }
     }
+}
+
+fn apply_gruvbox_theme(ctx: &egui::Context) {
+    // Gruvbox dark palette
+    let bg0_hard = Color32::from_rgb(29, 32, 33);
+    let bg0 = Color32::from_rgb(40, 40, 40);
+    let bg1 = Color32::from_rgb(60, 56, 54);
+    let bg2 = Color32::from_rgb(80, 73, 69);
+    let fg0 = Color32::from_rgb(251, 241, 199);
+    let fg1 = Color32::from_rgb(235, 219, 178);
+    let fg2 = Color32::from_rgb(213, 196, 161);
+    let yellow = Color32::from_rgb(215, 153, 33);
+    let blue = Color32::from_rgb(69, 133, 136);
+
+    let mut visuals = Visuals::dark();
+    visuals.override_text_color = Some(fg1);
+    visuals.panel_fill = bg0;
+    visuals.window_fill = bg0;
+    visuals.faint_bg_color = bg1;
+    visuals.extreme_bg_color = bg0_hard;
+    visuals.code_bg_color = bg0_hard;
+    visuals.hyperlink_color = blue;
+    visuals.selection.bg_fill = yellow;
+    visuals.selection.stroke = Stroke::new(1.0, bg0_hard);
+
+    visuals.widgets.noninteractive.bg_fill = bg0;
+    visuals.widgets.noninteractive.weak_bg_fill = bg1;
+    visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0, bg2);
+    visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0, fg2);
+
+    visuals.widgets.inactive.bg_fill = bg1;
+    visuals.widgets.inactive.weak_bg_fill = bg1;
+    visuals.widgets.inactive.bg_stroke = Stroke::new(1.0, bg2);
+    visuals.widgets.inactive.fg_stroke = Stroke::new(1.0, fg1);
+
+    visuals.widgets.hovered.bg_fill = bg2;
+    visuals.widgets.hovered.weak_bg_fill = bg2;
+    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, yellow);
+    visuals.widgets.hovered.fg_stroke = Stroke::new(1.0, fg0);
+
+    visuals.widgets.active.bg_fill = yellow;
+    visuals.widgets.active.weak_bg_fill = yellow;
+    visuals.widgets.active.bg_stroke = Stroke::new(1.0, fg0);
+    visuals.widgets.active.fg_stroke = Stroke::new(1.2, bg0_hard);
+
+    visuals.window_stroke = Stroke::new(1.0, bg2);
+
+    let mut style = (*ctx.style()).clone();
+    style.visuals = visuals;
+    style.spacing.item_spacing = egui::vec2(8.0, 6.0);
+    style.spacing.button_padding = egui::vec2(10.0, 6.0);
+    style.visuals.warn_fg_color = yellow;
+    style.visuals.error_fg_color = Color32::from_rgb(204, 36, 29);
+    ctx.set_style(style);
 }
 
 // ── Jump detection ────────────────────────────────────────────────────────────
@@ -191,7 +245,8 @@ struct GpsApp {
 
 impl GpsApp {
     fn new(cc: &CreationContext<'_>) -> Self {
-        let tiles = HttpTiles::new(CartoVoyager, cc.egui_ctx.clone());
+        apply_gruvbox_theme(&cc.egui_ctx);
+        let tiles = HttpTiles::new(OpenStreetMapTiles, cc.egui_ctx.clone());
         Self {
             records: HashMap::new(),
             sorted_ids: Vec::new(),
@@ -440,9 +495,8 @@ impl GpsApp {
     }}
   }}
   var m=L.map('{map_id}').setView([{clat:.6},{clon:.6}],13);
-  L.tileLayer('https://{{s}}.basemaps.cartocdn.com/rastertiles/voyager/{{z}}/{{x}}/{{y}}{{r}}.png',{{
-    attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
-    subdomains:'abcd',
+    L.tileLayer('https://tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png',{{
+        attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
     maxZoom:20
   }}).addTo(m);
   var c={coords_json};
@@ -749,6 +803,10 @@ impl GpsApp {
                         let ppx = |lon: f64| ox + (lon - min_lon) * sc;
                         let ppy = |lat: f64| oy + (lat - min_lat) * sc;
 
+                        let _ = pdf_draw_osm_basemap(
+                            &lyr, mx, mb, mw, mh, min_lat, max_lat, min_lon, max_lon,
+                        );
+
                         if recs.len() > 1 {
                             lyr.set_outline_color(col_blue.clone());
                             lyr.set_outline_thickness(0.4);
@@ -831,6 +889,10 @@ impl GpsApp {
                             let toy = tmb + pad + (dh - lat_s * sc) / 2.0;
                             let tppx = |lon: f64| tox + (lon - min_lon) * sc;
                             let tppy = |lat: f64| toy + (lat - min_lat) * sc;
+
+                            let _ = pdf_draw_osm_basemap(
+                                &lyr, tmx, tmb, tmw, tmh, min_lat, max_lat, min_lon, max_lon,
+                            );
 
                             // Gradient track: one colored segment per GPS step
                             if recs.len() > 1 {
@@ -1090,6 +1152,154 @@ fn pdf_dot(
         mode: PolygonMode::Fill,
         winding_order: WindingOrder::NonZero,
     });
+}
+
+fn tile_x_from_lon(lon: f64, zoom: u8) -> f64 {
+    let zf = 2f64.powi(zoom as i32);
+    ((lon + 180.0) / 360.0) * zf
+}
+
+fn tile_y_from_lat(lat: f64, zoom: u8) -> f64 {
+    let clamped = lat.clamp(-85.0511, 85.0511);
+    let lat_rad = clamped.to_radians();
+    let zf = 2f64.powi(zoom as i32);
+    let n = (1.0 - (lat_rad.tan() + 1.0 / lat_rad.cos()).ln() / std::f64::consts::PI) / 2.0;
+    n * zf
+}
+
+fn choose_osm_zoom(min_lat: f64, max_lat: f64, min_lon: f64, max_lon: f64, max_tiles: u32) -> u8 {
+    for z in (1_u8..=17_u8).rev() {
+        let tx0 = tile_x_from_lon(min_lon, z).floor() as i64;
+        let tx1 = tile_x_from_lon(max_lon, z).floor() as i64;
+        let ty0 = tile_y_from_lat(max_lat, z).floor() as i64;
+        let ty1 = tile_y_from_lat(min_lat, z).floor() as i64;
+        let tw = (tx1 - tx0 + 1).max(1) as u32;
+        let th = (ty1 - ty0 + 1).max(1) as u32;
+        if tw.saturating_mul(th) <= max_tiles {
+            return z;
+        }
+    }
+    1
+}
+
+fn pdf_draw_osm_basemap(
+    lyr: &printpdf::PdfLayerReference,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    min_lat: f64,
+    max_lat: f64,
+    min_lon: f64,
+    max_lon: f64,
+) -> Result<(), String> {
+    use image::imageops::{crop_imm, resize, FilterType};
+    use image::{DynamicImage, GenericImage, RgbaImage};
+    use printpdf::{Image, ImageTransform, Mm};
+
+    if !(min_lat.is_finite() && max_lat.is_finite() && min_lon.is_finite() && max_lon.is_finite()) {
+        return Err("Invalid map bounds".to_string());
+    }
+
+    let pad_lat = ((max_lat - min_lat).abs() * 0.08).max(1e-4);
+    let pad_lon = ((max_lon - min_lon).abs() * 0.08).max(1e-4);
+    let min_lat_p = (min_lat - pad_lat).clamp(-85.0511, 85.0511);
+    let max_lat_p = (max_lat + pad_lat).clamp(-85.0511, 85.0511);
+    let min_lon_p = (min_lon - pad_lon).clamp(-180.0, 180.0);
+    let max_lon_p = (max_lon + pad_lon).clamp(-180.0, 180.0);
+
+    let mut zoom = choose_osm_zoom(min_lat_p, max_lat_p, min_lon_p, max_lon_p, 36);
+    let (mut tx0, mut tx1, mut ty0, mut ty1);
+    loop {
+        tx0 = tile_x_from_lon(min_lon_p, zoom).floor() as i64;
+        tx1 = tile_x_from_lon(max_lon_p, zoom).floor() as i64;
+        ty0 = tile_y_from_lat(max_lat_p, zoom).floor() as i64;
+        ty1 = tile_y_from_lat(min_lat_p, zoom).floor() as i64;
+        let tw = (tx1 - tx0 + 1).max(1) as u32;
+        let th = (ty1 - ty0 + 1).max(1) as u32;
+        if tw.saturating_mul(th) <= 36 || zoom <= 1 {
+            break;
+        }
+        zoom -= 1;
+    }
+
+    let tw = (tx1 - tx0 + 1).max(1) as u32;
+    let th = (ty1 - ty0 + 1).max(1) as u32;
+    let mut mosaic = RgbaImage::new(tw * 256, th * 256);
+
+    let client = reqwest::blocking::Client::builder()
+        .user_agent("ms_toolkit/0.1")
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let world_tiles = 1_i64 << zoom;
+    for ty in ty0..=ty1 {
+        for tx in tx0..=tx1 {
+            let wrap_tx = ((tx % world_tiles) + world_tiles) % world_tiles;
+            if ty < 0 || ty >= world_tiles {
+                continue;
+            }
+
+            let url = format!("https://tile.openstreetmap.org/{}/{}/{}.png", zoom, wrap_tx, ty);
+            let bytes = client
+                .get(url)
+                .send()
+                .and_then(|r| r.error_for_status())
+                .map_err(|e| e.to_string())?
+                .bytes()
+                .map_err(|e| e.to_string())?;
+
+            let img = image::load_from_memory(&bytes)
+                .map_err(|e| e.to_string())?
+                .to_rgba8();
+
+            let dx = ((tx - tx0) as u32) * 256;
+            let dy = ((ty - ty0) as u32) * 256;
+            let _ = mosaic.copy_from(&img, dx, dy);
+        }
+    }
+
+    let left_px = tile_x_from_lon(min_lon_p, zoom) * 256.0;
+    let right_px = tile_x_from_lon(max_lon_p, zoom) * 256.0;
+    let top_px = tile_y_from_lat(max_lat_p, zoom) * 256.0;
+    let bottom_px = tile_y_from_lat(min_lat_p, zoom) * 256.0;
+
+    let mosaic_left = tx0 as f64 * 256.0;
+    let mosaic_top = ty0 as f64 * 256.0;
+
+    let cx = (left_px - mosaic_left).max(0.0) as u32;
+    let cy = (top_px - mosaic_top).max(0.0) as u32;
+    let cw = (right_px - left_px).max(1.0) as u32;
+    let ch = (bottom_px - top_px).max(1.0) as u32;
+
+    let cw = cw.min(mosaic.width().saturating_sub(cx));
+    let ch = ch.min(mosaic.height().saturating_sub(cy));
+
+    let cropped = crop_imm(&mosaic, cx, cy, cw.max(1), ch.max(1)).to_image();
+
+    let target_w_px = ((w / 25.4) * 180.0).round().clamp(128.0, 2200.0) as u32;
+    let target_h_px = ((h / 25.4) * 180.0).round().clamp(128.0, 2200.0) as u32;
+    let resized = resize(&cropped, target_w_px, target_h_px, FilterType::Triangle);
+
+    let dynimg = DynamicImage::ImageRgba8(resized);
+    let image = Image::from_dynamic_image(&dynimg);
+
+    let base_w_mm = target_w_px as f64 * 25.4 / 300.0;
+    let base_h_mm = target_h_px as f64 * 25.4 / 300.0;
+
+    image.add_to_layer(
+        lyr.clone(),
+        ImageTransform {
+            translate_x: Some(Mm(x as f32)),
+            translate_y: Some(Mm(y as f32)),
+            rotate: None,
+            scale_x: Some((w / base_w_mm) as f32),
+            scale_y: Some((h / base_h_mm) as f32),
+            dpi: Some(300.0),
+        },
+    );
+
+    Ok(())
 }
 
 /// Returns (r, g, b) ∈ 0.0–1.0 for the blue→cyan→green→orange→red gradient.

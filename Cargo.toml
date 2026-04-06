@@ -16,5 +16,7 @@ regex   = "1"
 rfd     = "0.14"
 rayon       = "1"
 egui_extras = "0.29"
-printpdf    = "0.6"
+printpdf    = { version = "0.6", features = ["embedded_images"] }
 zip         = "0.6"
+image       = { version = "0.24.9", default-features = true }
+reqwest     = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
