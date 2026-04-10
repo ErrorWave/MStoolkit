@@ -18,5 +18,13 @@ rayon       = "1"
 egui_extras = "0.29"
 printpdf    = { version = "0.6", features = ["embedded_images"] }
 zip         = "0.6"
+bzip2       = "0.4"
+tar         = "0.4"
 image       = { version = "0.24.9", default-features = true }
 reqwest     = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+russh       = "0.44"
+russh-keys  = "0.44"
+russh-sftp  = "2"
+async-trait = "0.1"
+futures     = "0.3"
+anyhow      = "1"

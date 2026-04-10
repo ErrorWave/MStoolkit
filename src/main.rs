@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod parser;
+mod sftp;
 
 use eframe::{egui, App, CreationContext, Frame};
 use egui::{Color32, ScrollArea, Stroke, Visuals};
@@ -11,6 +12,27 @@ use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{self, Receiver};
 use walkers::{HttpTiles, Map, MapMemory, Plugin, Position, Projector, Tiles, TileId};
 use walkers::sources::{Attribution, TileSource};
+use bzip2::read::BzDecoder;
+use tar::Archive;
+
+// ── Catppuccin Mocha palette ──────────────────────────────────────────────────
+const CAT_BASE:     Color32 = Color32::from_rgb(30,  30,  46);
+const CAT_MANTLE:   Color32 = Color32::from_rgb(24,  24,  37);
+const CAT_CRUST:    Color32 = Color32::from_rgb(17,  17,  27);
+const CAT_SURFACE0: Color32 = Color32::from_rgb(49,  50,  68);
+const CAT_SURFACE1: Color32 = Color32::from_rgb(69,  71,  90);
+const CAT_SURFACE2: Color32 = Color32::from_rgb(88,  91,  112);
+const CAT_OVERLAY0: Color32 = Color32::from_rgb(108, 112, 134);
+const CAT_OVERLAY1: Color32 = Color32::from_rgb(127, 132, 156);
+const CAT_SUBTEXT1: Color32 = Color32::from_rgb(186, 194, 222);
+const CAT_TEXT:     Color32 = Color32::from_rgb(205, 214, 244);
+const CAT_LAVENDER: Color32 = Color32::from_rgb(180, 190, 254);
+const CAT_BLUE:     Color32 = Color32::from_rgb(137, 180, 250);
+const CAT_MAUVE:    Color32 = Color32::from_rgb(203, 166, 247);
+const CAT_GREEN:    Color32 = Color32::from_rgb(166, 227, 161);
+const CAT_YELLOW:   Color32 = Color32::from_rgb(249, 226, 175);
+const CAT_PEACH:    Color32 = Color32::from_rgb(250, 179, 135);
+const CAT_RED:      Color32 = Color32::from_rgb(243, 139, 168);
 
 // OpenStreetMap tiles
 struct OpenStreetMapTiles;
@@ -31,57 +53,88 @@ impl TileSource for OpenStreetMapTiles {
     }
 }
 
-fn apply_gruvbox_theme(ctx: &egui::Context) {
-    // Gruvbox dark palette
-    let bg0_hard = Color32::from_rgb(29, 32, 33);
-    let bg0 = Color32::from_rgb(40, 40, 40);
-    let bg1 = Color32::from_rgb(60, 56, 54);
-    let bg2 = Color32::from_rgb(80, 73, 69);
-    let fg0 = Color32::from_rgb(251, 241, 199);
-    let fg1 = Color32::from_rgb(235, 219, 178);
-    let fg2 = Color32::from_rgb(213, 196, 161);
-    let yellow = Color32::from_rgb(215, 153, 33);
-    let blue = Color32::from_rgb(69, 133, 136);
+fn apply_catppuccin_theme(ctx: &egui::Context) {
+    // ── Load Inter fonts ──────────────────────────────────────────────────────
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert(
+        "Inter-Regular".to_owned(),
+        egui::FontData::from_static(include_bytes!("../assets/Inter-Regular.ttf")),
+    );
+    fonts.font_data.insert(
+        "Inter-Bold".to_owned(),
+        egui::FontData::from_static(include_bytes!("../assets/Inter-Bold.ttf")),
+    );
+    fonts
+        .families
+        .entry(egui::FontFamily::Proportional)
+        .or_default()
+        .insert(0, "Inter-Regular".to_owned());
+    fonts.families.insert(
+        egui::FontFamily::Name("Bold".into()),
+        vec!["Inter-Bold".to_owned(), "Inter-Regular".to_owned()],
+    );
+    ctx.set_fonts(fonts);
 
+    // ── Catppuccin Mocha visuals ──────────────────────────────────────────────
     let mut visuals = Visuals::dark();
-    visuals.override_text_color = Some(fg1);
-    visuals.panel_fill = bg0;
-    visuals.window_fill = bg0;
-    visuals.faint_bg_color = bg1;
-    visuals.extreme_bg_color = bg0_hard;
-    visuals.code_bg_color = bg0_hard;
-    visuals.hyperlink_color = blue;
-    visuals.selection.bg_fill = yellow;
-    visuals.selection.stroke = Stroke::new(1.0, bg0_hard);
+    visuals.override_text_color  = Some(CAT_TEXT);
+    visuals.panel_fill           = CAT_BASE;
+    visuals.window_fill          = CAT_MANTLE;
+    visuals.faint_bg_color       = CAT_SURFACE0;
+    visuals.extreme_bg_color     = CAT_CRUST;
+    visuals.code_bg_color        = CAT_CRUST;
+    visuals.hyperlink_color      = CAT_BLUE;
+    visuals.window_rounding      = egui::Rounding::same(10.0);
+    visuals.window_stroke        = Stroke::new(1.0, CAT_SURFACE1);
+    visuals.selection.bg_fill    = Color32::from_rgba_unmultiplied(180, 190, 254, 60);
+    visuals.selection.stroke     = Stroke::new(1.0, CAT_LAVENDER);
 
-    visuals.widgets.noninteractive.bg_fill = bg0;
-    visuals.widgets.noninteractive.weak_bg_fill = bg1;
-    visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0, bg2);
-    visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0, fg2);
+    visuals.widgets.noninteractive.bg_fill      = CAT_SURFACE0;
+    visuals.widgets.noninteractive.weak_bg_fill = CAT_SURFACE0;
+    visuals.widgets.noninteractive.bg_stroke    = Stroke::new(1.0, CAT_SURFACE1);
+    visuals.widgets.noninteractive.fg_stroke    = Stroke::new(1.0, CAT_SUBTEXT1);
+    visuals.widgets.noninteractive.rounding     = egui::Rounding::same(6.0);
 
-    visuals.widgets.inactive.bg_fill = bg1;
-    visuals.widgets.inactive.weak_bg_fill = bg1;
-    visuals.widgets.inactive.bg_stroke = Stroke::new(1.0, bg2);
-    visuals.widgets.inactive.fg_stroke = Stroke::new(1.0, fg1);
+    visuals.widgets.inactive.bg_fill      = CAT_SURFACE0;
+    visuals.widgets.inactive.weak_bg_fill = CAT_SURFACE0;
+    visuals.widgets.inactive.bg_stroke    = Stroke::new(1.0, CAT_SURFACE1);
+    visuals.widgets.inactive.fg_stroke    = Stroke::new(1.0, CAT_TEXT);
+    visuals.widgets.inactive.rounding     = egui::Rounding::same(6.0);
 
-    visuals.widgets.hovered.bg_fill = bg2;
-    visuals.widgets.hovered.weak_bg_fill = bg2;
-    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, yellow);
-    visuals.widgets.hovered.fg_stroke = Stroke::new(1.0, fg0);
+    visuals.widgets.hovered.bg_fill      = CAT_SURFACE1;
+    visuals.widgets.hovered.weak_bg_fill = CAT_SURFACE1;
+    visuals.widgets.hovered.bg_stroke    = Stroke::new(1.5, CAT_BLUE);
+    visuals.widgets.hovered.fg_stroke    = Stroke::new(1.0, CAT_TEXT);
+    visuals.widgets.hovered.rounding     = egui::Rounding::same(6.0);
 
-    visuals.widgets.active.bg_fill = yellow;
-    visuals.widgets.active.weak_bg_fill = yellow;
-    visuals.widgets.active.bg_stroke = Stroke::new(1.0, fg0);
-    visuals.widgets.active.fg_stroke = Stroke::new(1.2, bg0_hard);
+    visuals.widgets.active.bg_fill      = CAT_MAUVE;
+    visuals.widgets.active.weak_bg_fill = CAT_MAUVE;
+    visuals.widgets.active.bg_stroke    = Stroke::new(1.0, CAT_LAVENDER);
+    visuals.widgets.active.fg_stroke    = Stroke::new(2.0, CAT_CRUST);
+    visuals.widgets.active.rounding     = egui::Rounding::same(6.0);
 
-    visuals.window_stroke = Stroke::new(1.0, bg2);
+    visuals.widgets.open.bg_fill      = CAT_SURFACE1;
+    visuals.widgets.open.weak_bg_fill = CAT_SURFACE1;
+    visuals.widgets.open.bg_stroke    = Stroke::new(1.0, CAT_SURFACE2);
+    visuals.widgets.open.fg_stroke    = Stroke::new(1.0, CAT_TEXT);
+    visuals.widgets.open.rounding     = egui::Rounding::same(6.0);
 
+    visuals.warn_fg_color  = CAT_YELLOW;
+    visuals.error_fg_color = CAT_RED;
+
+    // ── Style & text hierarchy ────────────────────────────────────────────────
     let mut style = (*ctx.style()).clone();
     style.visuals = visuals;
-    style.spacing.item_spacing = egui::vec2(8.0, 6.0);
+    style.spacing.item_spacing   = egui::vec2(8.0, 6.0);
     style.spacing.button_padding = egui::vec2(10.0, 6.0);
-    style.visuals.warn_fg_color = yellow;
-    style.visuals.error_fg_color = Color32::from_rgb(204, 36, 29);
+    style.text_styles = [
+        (egui::TextStyle::Heading,   egui::FontId::new(18.0, egui::FontFamily::Name("Bold".into()))),
+        (egui::TextStyle::Body,      egui::FontId::new(14.0, egui::FontFamily::Proportional)),
+        (egui::TextStyle::Button,    egui::FontId::new(13.0, egui::FontFamily::Proportional)),
+        (egui::TextStyle::Small,     egui::FontId::new(11.0, egui::FontFamily::Proportional)),
+        (egui::TextStyle::Monospace, egui::FontId::new(13.0, egui::FontFamily::Monospace)),
+    ]
+    .into();
     ctx.set_style(style);
 }
 
@@ -102,9 +155,9 @@ fn count_large_jumps(recs: &[GpsRecord]) -> usize {
 
 fn jump_color(jumps: usize) -> Color32 {
     match jumps {
-        0 => Color32::from_rgb(80, 200, 80),
-        1..=15 => Color32::from_rgb(220, 195, 40),
-        _ => Color32::from_rgb(210, 55, 55),
+        0      => CAT_GREEN,
+        1..=15 => CAT_YELLOW,
+        _      => CAT_RED,
     }
 }
 
@@ -198,9 +251,9 @@ impl Plugin for Breadcrumbs {
         let n = pts.len();
         for (i, &pt) in pts.iter().enumerate() {
             let (fill, radius) = match i {
-                0 => (Color32::GREEN, 7.0_f32),
-                _ if i == n - 1 => (Color32::RED, 7.0_f32),
-                _ => (Color32::from_rgb(255, 140, 0), 5.0_f32),
+                0              => (CAT_GREEN, 7.0_f32),
+                _ if i == n-1  => (CAT_RED,   7.0_f32),
+                _              => (CAT_PEACH, 5.0_f32),
             };
             painter.circle_filled(pt, radius, fill);
             painter.circle_stroke(pt, radius, Stroke::new(1.5, Color32::WHITE));
@@ -214,6 +267,48 @@ struct MapWin {
     memory: MapMemory,
     center: Position,
     open: bool,
+}
+
+// ── SFTP browser state ────────────────────────────────────────────────────────
+
+struct SftpBrowser {
+    open: bool,
+    // Connection form
+    host: String,
+    port: String,
+    username: String,
+    password: String,
+    // Runtime state
+    connected: bool,
+    busy: bool,
+    current_path: String,
+    entries: Vec<sftp::SftpEntry>,
+    status: String,
+    // Channels (tokio unbounded — try_recv() is usable outside async context)
+    cmd_tx: Option<tokio::sync::mpsc::UnboundedSender<sftp::SftpCmd>>,
+    evt_rx: Option<tokio::sync::mpsc::UnboundedReceiver<sftp::SftpEvent>>,
+    // Downloaded file waiting to be loaded into the app
+    pending_load: Option<(String, Vec<u8>)>,
+}
+
+impl SftpBrowser {
+    fn new() -> Self {
+        Self {
+            open: false,
+            host: String::new(),
+            port: "22".into(),
+            username: String::new(),
+            password: String::new(),
+            connected: false,
+            busy: false,
+            current_path: "/".into(),
+            entries: Vec::new(),
+            status: "Not connected.".into(),
+            cmd_tx: None,
+            evt_rx: None,
+            pending_load: None,
+        }
+    }
 }
 
 // ── Background load result ────────────────────────────────────────────────────
@@ -241,11 +336,12 @@ struct GpsApp {
     load_rx: Option<Receiver<Result<LoadResult, String>>>,
     tiles: Option<HttpTiles>,
     maps: HashMap<String, MapWin>,
+    sftp: SftpBrowser,
 }
 
 impl GpsApp {
     fn new(cc: &CreationContext<'_>) -> Self {
-        apply_gruvbox_theme(&cc.egui_ctx);
+        apply_catppuccin_theme(&cc.egui_ctx);
         let tiles = HttpTiles::new(OpenStreetMapTiles, cc.egui_ctx.clone());
         Self {
             records: HashMap::new(),
@@ -259,6 +355,7 @@ impl GpsApp {
             load_rx: None,
             tiles: Some(tiles),
             maps: HashMap::new(),
+            sftp: SftpBrowser::new(),
         }
     }
 
@@ -268,23 +365,44 @@ impl GpsApp {
         self.is_loading = true;
         self.status = format!("Loading {}…", path);
 
-        let is_slk = path.to_lowercase().ends_with(".slk");
+        let lower = path.to_lowercase();
+        let is_slk  = lower.ends_with(".slk");
+        let is_tar = lower.ends_with(".tar");
+        let is_tbz2 = lower.ends_with(".tbz2");
         std::thread::spawn(move || {
-            let result = match std::fs::read_to_string(&path) {
-                Ok(text) => {
-                    let (records, stats) = if is_slk {
-                        parse_slk(&text)
-                    } else {
-                        parse_log(&text)
-                    };
-                    Ok(LoadResult {
-                        path,
-                        records,
-                        raw_fixes: stats.raw_fixes,
-                        after_dedup: stats.after_dedup,
-                    })
+            let result = if is_tbz2 || is_tar {
+                match std::fs::read(&path) {
+                    Ok(bytes) => match if is_tbz2 { extract_tbz2(&bytes) } else { extract_tar(&bytes) } {
+                        Ok(text) => {
+                            let (records, stats) = parse_log(&text);
+                            Ok(LoadResult {
+                                path,
+                                records,
+                                raw_fixes: stats.raw_fixes,
+                                after_dedup: stats.after_dedup,
+                            })
+                        }
+                        Err(e) => Err(e),
+                    },
+                    Err(e) => Err(format!("Error reading file: {e}")),
                 }
-                Err(e) => Err(format!("Error reading file: {e}")),
+            } else {
+                match std::fs::read_to_string(&path) {
+                    Ok(text) => {
+                        let (records, stats) = if is_slk {
+                            parse_slk(&text)
+                        } else {
+                            parse_log(&text)
+                        };
+                        Ok(LoadResult {
+                            path,
+                            records,
+                            raw_fixes: stats.raw_fixes,
+                            after_dedup: stats.after_dedup,
+                        })
+                    }
+                    Err(e) => Err(format!("Error reading file: {e}")),
+                }
             };
             let _ = tx.send(result);
             ctx.request_repaint();
@@ -1088,6 +1206,437 @@ impl GpsApp {
         });
         entry.open = true;
     }
+
+    // ── Load from in-memory string (used for SFTP downloads) ─────────────────
+
+    fn start_load_from_string(&mut self, content: String, name: String, ctx: egui::Context) {
+        let (tx, rx) = mpsc::channel();
+        self.load_rx = Some(rx);
+        self.is_loading = true;
+        self.status = format!("Loading {}…", name);
+        let is_slk = name.to_ascii_lowercase().ends_with(".slk");
+        std::thread::spawn(move || {
+            let (records, stats) = if is_slk {
+                parse_slk(&content)
+            } else {
+                parse_log(&content)
+            };
+            let result: Result<LoadResult, String> = Ok(LoadResult {
+                path: name,
+                records,
+                raw_fixes: stats.raw_fixes,
+                after_dedup: stats.after_dedup,
+            });
+            let _ = tx.send(result);
+            ctx.request_repaint();
+        });
+    }
+
+    // ── SFTP helpers ──────────────────────────────────────────────────────────
+
+    fn sftp_connect(
+        &mut self,
+        host: String,
+        port: u16,
+        username: String,
+        password: String,
+        ctx: egui::Context,
+    ) {
+        let (cmd_tx, cmd_rx) =
+            tokio::sync::mpsc::unbounded_channel::<sftp::SftpCmd>();
+        let (evt_tx, evt_rx) =
+            tokio::sync::mpsc::unbounded_channel::<sftp::SftpEvent>();
+        self.sftp.cmd_tx = Some(cmd_tx);
+        self.sftp.evt_rx = Some(evt_rx);
+        self.sftp.status = format!("Connecting to {host}:{port}…");
+        self.sftp.busy = true;
+        self.sftp.connected = false;
+        self.sftp.entries.clear();
+
+        // Spawn on the tokio runtime that was entered in main()
+        tokio::spawn(sftp::worker_task(
+            host, port, username, password, cmd_rx, evt_tx,
+            move || ctx.request_repaint(),
+        ));
+    }
+
+    fn sftp_disconnect(&mut self) {
+        if let Some(tx) = &self.sftp.cmd_tx {
+            let _ = tx.send(sftp::SftpCmd::Disconnect);
+        }
+        self.sftp.cmd_tx = None;
+        self.sftp.evt_rx = None;
+        self.sftp.connected = false;
+        self.sftp.busy = false;
+        self.sftp.entries.clear();
+        self.sftp.status = "Disconnected.".into();
+    }
+
+    fn poll_sftp_events(&mut self) {
+        // Drain the event receiver without holding a borrow across the match arms.
+        // tokio::sync::mpsc::UnboundedReceiver::try_recv needs &mut self.
+        let events: Vec<sftp::SftpEvent> = if let Some(rx) = &mut self.sftp.evt_rx {
+            let mut v = Vec::new();
+            while let Ok(e) = rx.try_recv() {
+                v.push(e);
+            }
+            v
+        } else {
+            Vec::new()
+        };
+
+        for evt in events {
+            match evt {
+                sftp::SftpEvent::Connected { home_dir } => {
+                    self.sftp.connected = true;
+                    self.sftp.busy = false;
+                    self.sftp.status = "Connected.".into();
+                    self.sftp.current_path = home_dir.clone();
+                    if let Some(tx) = &self.sftp.cmd_tx {
+                        let _ = tx.send(sftp::SftpCmd::ListDir(home_dir));
+                    }
+                }
+                sftp::SftpEvent::DirListing { path, entries } => {
+                    self.sftp.current_path = path;
+                    self.sftp.entries = entries;
+                    self.sftp.busy = false;
+                }
+                sftp::SftpEvent::FileData { name, data } => {
+                    self.sftp.busy = false;
+                    self.sftp.status = format!("Downloaded: {name}");
+                    self.sftp.pending_load = Some((name, data));
+                }
+                sftp::SftpEvent::Busy(b) => {
+                    self.sftp.busy = b;
+                }
+                sftp::SftpEvent::Error(e) => {
+                    self.sftp.status = format!("Error: {e}");
+                    self.sftp.busy = false;
+                    self.sftp.connected = false;
+                    self.sftp.cmd_tx = None;
+                    self.sftp.evt_rx = None;
+                }
+            }
+        }
+    }
+
+    fn show_sftp_window(&mut self, ctx: &egui::Context) {
+        if !self.sftp.open {
+            return;
+        }
+
+        // ── Extract display state before the closure ──────────────────────────
+        let connected = self.sftp.connected;
+        let busy = self.sftp.busy;
+        let current_path = self.sftp.current_path.clone();
+        let entries = self.sftp.entries.clone();
+        let status = self.sftp.status.clone();
+
+        // Local copies of form fields (written back after the window)
+        let mut host = self.sftp.host.clone();
+        let mut port_str = self.sftp.port.clone();
+        let mut username = self.sftp.username.clone();
+        let mut password = self.sftp.password.clone();
+        let mut open = self.sftp.open;
+
+        // ── Deferred actions ──────────────────────────────────────────────────
+        let mut connect_action: Option<(String, u16, String, String)> = None;
+        let mut disconnect_action = false;
+        let mut navigate_to: Option<String> = None;
+        let mut download_action: Option<(String, String)> = None;
+
+        // ── Render ────────────────────────────────────────────────────────────
+        egui::Window::new("SFTP File Browser")
+            .open(&mut open)
+            .default_size([640.0, 500.0])
+            .min_size([420.0, 300.0])
+            .resizable(true)
+            .show(ctx, |ui| {
+                // ── Connection form ───────────────────────────────────────────
+                let hdr = if connected { "✅  Connection" } else { "🔌  Connection" };
+                egui::CollapsingHeader::new(hdr)
+                    .default_open(!connected)
+                    .show(ui, |ui| {
+                        egui::Frame::none()
+                            .fill(CAT_SURFACE0)
+                            .rounding(egui::Rounding::same(8.0))
+                            .inner_margin(egui::Margin::same(10.0))
+                            .show(ui, |ui| {
+                                ui.label(egui::RichText::new("Host").small().color(CAT_OVERLAY1));
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut host)
+                                        .desired_width(f32::INFINITY)
+                                        .hint_text("192.168.1.1"),
+                                );
+                                ui.add_space(4.0);
+
+                                ui.label(egui::RichText::new("Port").small().color(CAT_OVERLAY1));
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut port_str)
+                                        .desired_width(80.0),
+                                );
+                                ui.add_space(4.0);
+
+                                ui.label(egui::RichText::new("Username").small().color(CAT_OVERLAY1));
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut username)
+                                        .desired_width(f32::INFINITY),
+                                );
+                                ui.add_space(4.0);
+
+                                ui.label(egui::RichText::new("Password").small().color(CAT_OVERLAY1));
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut password)
+                                        .password(true)
+                                        .desired_width(f32::INFINITY),
+                                );
+                            });
+
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            if !connected {
+                                let can_connect =
+                                    !host.trim().is_empty() && !username.trim().is_empty();
+                                if ui
+                                    .add_enabled(can_connect, egui::Button::new("🔗  Connect"))
+                                    .clicked()
+                                {
+                                    let port = port_str.trim().parse::<u16>().unwrap_or(22);
+                                    connect_action = Some((
+                                        host.trim().to_string(),
+                                        port,
+                                        username.trim().to_string(),
+                                        password.clone(),
+                                    ));
+                                }
+                            } else if ui.button("⏹  Disconnect").clicked() {
+                                disconnect_action = true;
+                            }
+                        });
+                    });
+
+                ui.separator();
+
+                // ── Status bar ────────────────────────────────────────────────
+                egui::Frame::none()
+                    .fill(if busy {
+                        Color32::from_rgba_unmultiplied(249, 226, 175, 20)
+                    } else {
+                        CAT_SURFACE0
+                    })
+                    .rounding(egui::Rounding::same(4.0))
+                    .inner_margin(egui::Margin::symmetric(8.0, 4.0))
+                    .show(ui, |ui| {
+                        if busy {
+                            ui.horizontal(|ui| {
+                                ui.spinner();
+                                ui.label(egui::RichText::new(&status).color(CAT_YELLOW));
+                            });
+                        } else {
+                            ui.label(egui::RichText::new(&status).color(CAT_OVERLAY1));
+                        }
+                    });
+
+                if !connected {
+                    return;
+                }
+
+                ui.separator();
+
+                // ── Path bar + Up button ──────────────────────────────────────
+                egui::Frame::none()
+                    .fill(CAT_SURFACE0)
+                    .rounding(egui::Rounding::same(6.0))
+                    .inner_margin(egui::Margin { left: 10.0, right: 6.0, top: 4.0, bottom: 4.0 })
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label("📂");
+                            ui.label(
+                                egui::RichText::new(&current_path)
+                                    .color(CAT_LAVENDER),
+                            );
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if ui.button("↑ Up").clicked() {
+                                    let parent = std::path::Path::new(&current_path)
+                                        .parent()
+                                        .map(|p| p.to_string_lossy().replace('\\', "/").to_string())
+                                        .filter(|s| !s.is_empty())
+                                        .unwrap_or_else(|| "/".to_string());
+                                    navigate_to = Some(parent);
+                                }
+                            });
+                        });
+                    });
+                ui.add_space(4.0);
+
+                // ── Directory listing ─────────────────────────────────────────
+                if entries.is_empty() && !busy {
+                    ui.label(egui::RichText::new("(empty directory)").color(CAT_OVERLAY1));
+                }
+
+                ScrollArea::vertical()
+                    .id_salt("sftp_listing")
+                    .max_height(ui.available_height() - 4.0)
+                    .show(ui, |ui| {
+                        for entry in &entries {
+                            let is_log = !entry.is_dir && sftp_is_log_file(&entry.name);
+
+                            let label = if entry.is_dir {
+                                format!("📁  {}/", entry.name)
+                            } else {
+                                format!(
+                                    "{}  {}   {}",
+                                    if is_log { "📄" } else { "   " },
+                                    entry.name,
+                                    sftp_fmt_size(entry.size)
+                                )
+                            };
+
+                            let color = if entry.is_dir {
+                                CAT_BLUE
+                            } else if is_log {
+                                CAT_GREEN
+                            } else {
+                                CAT_OVERLAY0
+                            };
+
+                            let tooltip = if entry.is_dir {
+                                "Click to open directory"
+                            } else if is_log {
+                                "Click to download and load"
+                            } else {
+                                "Not a supported log file (.log / .log.<date> / .slk / .txt / .tbz2 / .tar)"
+                            };
+
+                            let resp = ui
+                                .add(
+                                    egui::Label::new(
+                                        egui::RichText::new(&label).color(color),
+                                    )
+                                    .sense(egui::Sense::click()),
+                                )
+                                .on_hover_text(tooltip);
+
+                            if resp.clicked() {
+                                if entry.is_dir {
+                                    navigate_to = Some(entry.full_path.clone());
+                                } else if is_log && !busy {
+                                    download_action =
+                                        Some((entry.full_path.clone(), entry.name.clone()));
+                                }
+                            }
+                        }
+                    });
+            });
+
+        // ── Write back form fields ────────────────────────────────────────────
+        self.sftp.open = open;
+        self.sftp.host = host;
+        self.sftp.port = port_str;
+        self.sftp.username = username;
+        self.sftp.password = password;
+
+        // ── Apply deferred actions ────────────────────────────────────────────
+        if let Some((h, p, u, pw)) = connect_action {
+            self.sftp_connect(h, p, u, pw, ctx.clone());
+        }
+        if disconnect_action {
+            self.sftp_disconnect();
+        }
+        if let Some(path) = navigate_to {
+            if let Some(tx) = &self.sftp.cmd_tx {
+                let _ = tx.send(sftp::SftpCmd::ListDir(path.clone()));
+            }
+            self.sftp.current_path = path;
+        }
+        if let Some((path, name)) = download_action {
+            if let Some(tx) = &self.sftp.cmd_tx {
+                let _ = tx.send(sftp::SftpCmd::Download {
+                    path,
+                    name: name.clone(),
+                });
+                self.sftp.status = format!("Downloading {}…", name);
+                self.sftp.busy = true;
+            }
+        }
+    }
+}
+
+// ── SFTP UI helpers ───────────────────────────────────────────────────────────
+
+fn sftp_is_log_file(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    is_log_like_name(&lower) || lower.ends_with(".slk") || lower.ends_with(".txt")
+    || lower.ends_with(".tbz2") || lower.ends_with(".tar")
+}
+
+fn is_log_like_name(lower_name: &str) -> bool {
+    if lower_name.ends_with(".log") {
+        return true;
+    }
+
+    // Accept dated log variants like "name.log.20260410".
+    if let Some((head, tail)) = lower_name.rsplit_once(".log.") {
+        return !head.is_empty() && !tail.is_empty() && tail.chars().all(|c| c.is_ascii_digit());
+    }
+
+    false
+}
+
+/// Decompress a `.tbz2` (bzip2-compressed tar) byte slice and return the
+/// contents of the first log-like entry found inside the archive.
+fn extract_tbz2(data: &[u8]) -> Result<String, String> {
+    let bz = BzDecoder::new(data);
+    let mut archive = Archive::new(bz);
+    let entries = archive.entries().map_err(|e| format!("tar read error: {e}"))?;
+    for entry in entries {
+        let mut entry = entry.map_err(|e| format!("tar entry error: {e}"))?;
+        let path = entry.path().map_err(|e| format!("tar path error: {e}"))?;
+        let is_log = path
+            .to_str()
+            .map(|s| is_log_like_name(&s.to_ascii_lowercase()))
+            .unwrap_or(false);
+        if is_log {
+            let mut text = String::new();
+            use std::io::Read;
+            entry.read_to_string(&mut text).map_err(|e| format!("read log entry: {e}"))?;
+            return Ok(text);
+        }
+    }
+    Err("No log-like file found inside the tbz2 archive".into())
+}
+
+/// Read a `.tar` byte slice and return the contents of the first log-like
+/// entry found inside the archive.
+fn extract_tar(data: &[u8]) -> Result<String, String> {
+    let cursor = std::io::Cursor::new(data);
+    let mut archive = Archive::new(cursor);
+    let entries = archive.entries().map_err(|e| format!("tar read error: {e}"))?;
+    for entry in entries {
+        let mut entry = entry.map_err(|e| format!("tar entry error: {e}"))?;
+        let path = entry.path().map_err(|e| format!("tar path error: {e}"))?;
+        let is_log = path
+            .to_str()
+            .map(|s| is_log_like_name(&s.to_ascii_lowercase()))
+            .unwrap_or(false);
+        if is_log {
+            let mut text = String::new();
+            use std::io::Read;
+            entry.read_to_string(&mut text).map_err(|e| format!("read log entry: {e}"))?;
+            return Ok(text);
+        }
+    }
+    Err("No log-like file found inside the tar archive".into())
+}
+
+fn sftp_fmt_size(bytes: u64) -> String {
+    if bytes < 1_024 {
+        format!("{bytes} B")
+    } else if bytes < 1_024 * 1_024 {
+        format!("{:.1} KB", bytes as f64 / 1_024.0)
+    } else {
+        format!("{:.1} MB", bytes as f64 / (1_024.0 * 1_024.0))
+    }
 }
 
 // ── PDF drawing helpers ───────────────────────────────────────────────────────
@@ -1333,6 +1882,10 @@ struct IdStats {
 // ── egui update loop ──────────────────────────────────────────────────────────
 
 impl App for GpsApp {
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        CAT_BASE.to_normalized_gamma_f32()
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut Frame) {
         // ── Poll background load thread ───────────────────────────────────────
         let load_result: Option<Result<LoadResult, String>> =
@@ -1352,98 +1905,185 @@ impl App for GpsApp {
             None => {}
         }
 
+        // ── Poll SFTP events & handle pending download ────────────────────────
+        self.poll_sftp_events();
+        if let Some((name, data)) = self.sftp.pending_load.take() {
+            if name.to_ascii_lowercase().ends_with(".tbz2") {
+                match extract_tbz2(&data) {
+                    Ok(content) => self.start_load_from_string(content, name, ctx.clone()),
+                    Err(e) => self.status = format!("Failed to extract tbz2: {e}"),
+                }
+            } else if name.to_ascii_lowercase().ends_with(".tar") {
+                match extract_tar(&data) {
+                    Ok(content) => self.start_load_from_string(content, name, ctx.clone()),
+                    Err(e) => self.status = format!("Failed to extract tar: {e}"),
+                }
+            } else {
+                match String::from_utf8(data) {
+                    Ok(content) => self.start_load_from_string(content, name, ctx.clone()),
+                    Err(_) => self.status = "SFTP download is not valid UTF-8 text.".into(),
+                }
+            }
+        }
+
         // ── Top bar ───────────────────────────────────────────────────────────
         egui::TopBottomPanel::top("topbar").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                let open_btn = ui.add_enabled(
-                    !self.is_loading,
-                    egui::Button::new("📂  Open Log File…"),
-                );
-                if open_btn.clicked() {
-                    if let Some(p) = rfd::FileDialog::new()
-                        .add_filter("GPS files", &["log", "txt", "slk"])
-                        .pick_file()
-                    {
-                        self.start_load(p.display().to_string(), ctx.clone());
-                    }
-                }
+            egui::Frame::none()
+                .inner_margin(egui::Margin::symmetric(6.0, 4.0))
+                .show(ui, |ui| {
+                    ui.style_mut().spacing.item_spacing = egui::vec2(4.0, 4.0);
+                    ui.style_mut().spacing.button_padding = egui::vec2(8.0, 4.0);
 
-                ui.separator();
-                let has_data = !self.is_loading && !self.sorted_ids.is_empty();
-                let has_sel  = !self.is_loading && !self.selection.is_empty();
+                    let has_data = !self.is_loading && !self.sorted_ids.is_empty();
+                    let has_sel = !self.is_loading && !self.selection.is_empty();
 
-                if ui.add_enabled(has_data, egui::Button::new("🌐 HTML – All")).clicked() {
-                    let ids = self.sorted_ids.clone();
-                    self.build_html_report(ids);
-                }
-                if ui.add_enabled(has_sel, egui::Button::new("🌐 HTML – Sel")).clicked() {
-                    let ids = self.selected_ids_sorted();
-                    self.build_html_report(ids);
-                }
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add_enabled(!self.is_loading, egui::Button::new("Open"))
+                            .clicked()
+                        {
+                            if let Some(p) = rfd::FileDialog::new()
+                                .add_filter("GPS files", &["log", "txt", "slk", "tbz2", "tar"])
+                                .pick_file()
+                            {
+                                self.start_load(p.display().to_string(), ctx.clone());
+                            }
+                        }
 
-                ui.separator();
+                        ui.add_enabled_ui(has_data || has_sel, |ui| {
+                            ui.menu_button("HTML", |ui| {
+                                if ui.add_enabled(has_data, egui::Button::new("All IDs")).clicked()
+                                {
+                                    let ids = self.sorted_ids.clone();
+                                    self.build_html_report(ids);
+                                    ui.close_menu();
+                                }
+                                if ui
+                                    .add_enabled(has_sel, egui::Button::new("Selection"))
+                                    .clicked()
+                                {
+                                    let ids = self.selected_ids_sorted();
+                                    self.build_html_report(ids);
+                                    ui.close_menu();
+                                }
+                            });
+                        });
 
-                if ui.add_enabled(has_data, egui::Button::new("📄 PDF – All")).clicked() {
-                    let ids = self.sorted_ids.clone();
-                    self.build_pdf_report(ids);
-                }
-                if ui.add_enabled(has_sel, egui::Button::new("📄 PDF – Sel")).clicked() {
-                    let ids = self.selected_ids_sorted();
-                    self.build_pdf_report(ids);
-                }
+                        ui.add_enabled_ui(has_data || has_sel, |ui| {
+                            ui.menu_button("PDF", |ui| {
+                                if ui.add_enabled(has_data, egui::Button::new("All IDs")).clicked()
+                                {
+                                    let ids = self.sorted_ids.clone();
+                                    self.build_pdf_report(ids);
+                                    ui.close_menu();
+                                }
+                                if ui
+                                    .add_enabled(has_sel, egui::Button::new("Selection"))
+                                    .clicked()
+                                {
+                                    let ids = self.selected_ids_sorted();
+                                    self.build_pdf_report(ids);
+                                    ui.close_menu();
+                                }
+                            });
+                        });
 
-                ui.separator();
+                        ui.add_enabled_ui(has_data || has_sel, |ui| {
+                            ui.menu_button("KMZ", |ui| {
+                                if ui.add_enabled(has_data, egui::Button::new("All IDs")).clicked()
+                                {
+                                    let ids = self.sorted_ids.clone();
+                                    self.build_kmz_export(ids);
+                                    ui.close_menu();
+                                }
+                                if ui
+                                    .add_enabled(has_sel, egui::Button::new("Selection"))
+                                    .clicked()
+                                {
+                                    let ids = self.selected_ids_sorted();
+                                    self.build_kmz_export(ids);
+                                    ui.close_menu();
+                                }
+                            });
+                        });
 
-                if ui.add_enabled(has_data, egui::Button::new("🗺 KMZ – All")).clicked() {
-                    let ids = self.sorted_ids.clone();
-                    self.build_kmz_export(ids);
-                }
-                if ui.add_enabled(has_sel, egui::Button::new("🗺 KMZ – Sel")).clicked() {
-                    let ids = self.selected_ids_sorted();
-                    self.build_kmz_export(ids);
-                }
+                        if ui.button("SFTP").clicked() {
+                            self.sftp.open = true;
+                        }
 
-                ui.separator();
-                if self.is_loading {
-                    ui.spinner();
-                }
-                ui.label(&self.status);
-            });
+                        ui.separator();
+
+                        let mut status_text = self.status.clone();
+                        const MAX_STATUS_CHARS: usize = 64;
+                        if status_text.chars().count() > MAX_STATUS_CHARS {
+                            let short = status_text
+                                .chars()
+                                .take(MAX_STATUS_CHARS - 1)
+                                .collect::<String>();
+                            status_text = format!("{short}…");
+                        }
+
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.add_sized(
+                                [300.0, 0.0],
+                                egui::Label::new(
+                                    egui::RichText::new(status_text)
+                                        .small()
+                                        .color(CAT_OVERLAY1),
+                                ),
+                            );
+                            if self.is_loading {
+                                ui.spinner();
+                            }
+                        });
+                    });
+                });
         });
 
         // ── Left panel – Source IDs ───────────────────────────────────────────
         egui::SidePanel::left("id_panel")
-            .min_width(220.0)
-            .max_width(320.0)
-            .default_width(240.0)
+            .resizable(false)
+            .exact_width(312.0)
+            .show_separator_line(false)
+            .frame(egui::Frame::none().fill(CAT_BASE))
             .show(ctx, |ui| {
                 ui.add_space(6.0);
                 ui.heading("Source IDs");
                 ui.add_space(4.0);
 
-                egui::Frame::none()
-                    .inner_margin(egui::Margin::symmetric(4.0, 3.0))
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.colored_label(jump_color(0),  "●");
-                            ui.label(egui::RichText::new("Clean").small());
-                            ui.add_space(4.0);
-                            ui.colored_label(jump_color(1),  "●");
-                            ui.label(egui::RichText::new("1–15").small());
-                            ui.add_space(4.0);
-                            ui.colored_label(jump_color(16), "●");
-                            ui.label(egui::RichText::new(">15").small());
+                ui.horizontal(|ui| {
+                    egui::Frame::none()
+                        .fill(CAT_GREEN)
+                        .rounding(egui::Rounding::same(4.0))
+                        .inner_margin(egui::Margin { left: 6.0, right: 6.0, top: 2.0, bottom: 2.0 })
+                        .show(ui, |ui| {
+                            ui.label(egui::RichText::new("Clean").small().color(CAT_CRUST));
                         });
-                    });
+                    ui.add_space(2.0);
+                    egui::Frame::none()
+                        .fill(CAT_YELLOW)
+                        .rounding(egui::Rounding::same(4.0))
+                        .inner_margin(egui::Margin { left: 6.0, right: 6.0, top: 2.0, bottom: 2.0 })
+                        .show(ui, |ui| {
+                            ui.label(egui::RichText::new("1–15").small().color(CAT_CRUST));
+                        });
+                    ui.add_space(2.0);
+                    egui::Frame::none()
+                        .fill(CAT_RED)
+                        .rounding(egui::Rounding::same(4.0))
+                        .inner_margin(egui::Margin { left: 6.0, right: 6.0, top: 2.0, bottom: 2.0 })
+                        .show(ui, |ui| {
+                            ui.label(egui::RichText::new(">15").small().color(CAT_CRUST));
+                        });
+                });
 
                 ui.separator();
 
                 ui.horizontal(|ui| {
-                    ui.label("🔍");
                     ui.add(
                         egui::TextEdit::singleline(&mut self.search)
-                            .hint_text("Filter IDs…")
-                            .desired_width(150.0),
+                            .hint_text("🔍  Search IDs…")
+                            .desired_width(f32::INFINITY),
                     );
                     if ui.small_button("✕").clicked() {
                         self.search.clear();
@@ -1469,12 +2109,13 @@ impl App for GpsApp {
                 ui.label(
                     egui::RichText::new(format!("{shown_str}{sel_str}"))
                         .small()
-                        .color(Color32::GRAY),
+                        .color(CAT_OVERLAY1),
                 );
                 ui.label(
                     egui::RichText::new("Ctrl+Click to multi-select")
                         .small()
-                        .color(Color32::from_gray(140)),
+                        .color(CAT_OVERLAY0)
+                        .italics(),
                 );
                 ui.separator();
 
@@ -1532,11 +2173,16 @@ impl App for GpsApp {
 
         let mut open_map_request: Option<String> = None;
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default()
+            .frame(egui::Frame::none().fill(CAT_BASE))
+            .show(ctx, |ui| {
             match focused_id.as_deref() {
                 None => {
                     ui.centered_and_justified(|ui| {
-                        ui.label("← Select a source ID to view details.");
+                        ui.label(
+                            egui::RichText::new("← Select a source ID to view details.")
+                                .color(CAT_OVERLAY1),
+                        );
                     });
                 }
                 Some(id) => {
@@ -1551,30 +2197,67 @@ impl App for GpsApp {
 
                         ui.horizontal(|ui| {
                             ui.heading(format!("Source ID: {id}"));
-                            ui.add_space(10.0);
-                            ui.colored_label(jcolor, format!("●  {jump_label}"));
+                            ui.add_space(8.0);
+                            egui::Frame::none()
+                                .fill(jcolor)
+                                .rounding(egui::Rounding::same(6.0))
+                                .inner_margin(egui::Margin { left: 8.0, right: 8.0, top: 3.0, bottom: 3.0 })
+                                .show(ui, |ui| {
+                                    ui.label(
+                                        egui::RichText::new(&jump_label)
+                                            .small()
+                                            .color(CAT_CRUST)
+                                            .strong(),
+                                    );
+                                });
                         });
                         ui.separator();
 
-                        egui::Grid::new("detail_grid")
-                            .num_columns(2)
-                            .spacing([16.0, 4.0])
+                        egui::Frame::none()
+                            .fill(CAT_SURFACE0)
+                            .rounding(egui::Rounding::same(8.0))
+                            .inner_margin(egui::Margin::same(12.0))
                             .show(ui, |ui| {
-                                ui.strong("Total fixes (after dedup):");
-                                ui.label(s.count.to_string());
-                                ui.end_row();
-                                ui.strong("First timestamp:");
-                                ui.label(&s.first_ts);
-                                ui.end_row();
-                                ui.strong("Latest timestamp:");
-                                ui.label(&s.last_ts);
-                                ui.end_row();
-                                ui.strong("Latest latitude:");
-                                ui.label(format!("{:.6}", s.last_lat));
-                                ui.end_row();
-                                ui.strong("Latest longitude:");
-                                ui.label(format!("{:.6}", s.last_lon));
-                                ui.end_row();
+                                egui::Grid::new("detail_grid")
+                                    .num_columns(2)
+                                    .spacing([16.0, 4.0])
+                                    .show(ui, |ui| {
+                                        ui.label(
+                                            egui::RichText::new("Total fixes (after dedup):")
+                                                .color(CAT_SUBTEXT1)
+                                                .strong(),
+                                        );
+                                        ui.label(s.count.to_string());
+                                        ui.end_row();
+                                        ui.label(
+                                            egui::RichText::new("First timestamp:")
+                                                .color(CAT_SUBTEXT1)
+                                                .strong(),
+                                        );
+                                        ui.label(&s.first_ts);
+                                        ui.end_row();
+                                        ui.label(
+                                            egui::RichText::new("Latest timestamp:")
+                                                .color(CAT_SUBTEXT1)
+                                                .strong(),
+                                        );
+                                        ui.label(&s.last_ts);
+                                        ui.end_row();
+                                        ui.label(
+                                            egui::RichText::new("Latest latitude:")
+                                                .color(CAT_SUBTEXT1)
+                                                .strong(),
+                                        );
+                                        ui.label(format!("{:.6}", s.last_lat));
+                                        ui.end_row();
+                                        ui.label(
+                                            egui::RichText::new("Latest longitude:")
+                                                .color(CAT_SUBTEXT1)
+                                                .strong(),
+                                        );
+                                        ui.label(format!("{:.6}", s.last_lon));
+                                        ui.end_row();
+                                    });
                             });
 
                         ui.add_space(10.0);
@@ -1584,7 +2267,11 @@ impl App for GpsApp {
 
                         ui.add_space(12.0);
                         ui.separator();
-                        ui.strong("Fix History (deduplicated)");
+                        ui.label(
+                            egui::RichText::new("Fix History (deduplicated)")
+                                .color(CAT_SUBTEXT1)
+                                .strong(),
+                        );
                         ui.add_space(4.0);
 
                         if let Some(recs) = self.records.get(id) {
@@ -1595,10 +2282,30 @@ impl App for GpsApp {
                                 .column(Column::exact(100.0))
                                 .column(Column::remainder())
                                 .header(20.0, |mut h| {
-                                    h.col(|ui| { ui.strong("#"); });
-                                    h.col(|ui| { ui.strong("Timestamp"); });
-                                    h.col(|ui| { ui.strong("Latitude"); });
-                                    h.col(|ui| { ui.strong("Longitude"); });
+                                    h.col(|ui| {
+                                        ui.label(egui::RichText::new("#").color(CAT_SUBTEXT1).strong());
+                                    });
+                                    h.col(|ui| {
+                                        ui.label(
+                                            egui::RichText::new("Timestamp")
+                                                .color(CAT_SUBTEXT1)
+                                                .strong(),
+                                        );
+                                    });
+                                    h.col(|ui| {
+                                        ui.label(
+                                            egui::RichText::new("Latitude")
+                                                .color(CAT_SUBTEXT1)
+                                                .strong(),
+                                        );
+                                    });
+                                    h.col(|ui| {
+                                        ui.label(
+                                            egui::RichText::new("Longitude")
+                                                .color(CAT_SUBTEXT1)
+                                                .strong(),
+                                        );
+                                    });
                                 })
                                 .body(|body| {
                                     body.rows(18.0, recs.len(), |mut row| {
@@ -1607,7 +2314,7 @@ impl App for GpsApp {
                                         row.col(|ui| {
                                             ui.label(
                                                 egui::RichText::new(format!("{}", i + 1))
-                                                    .color(Color32::GRAY),
+                                                    .color(CAT_OVERLAY0),
                                             );
                                         });
                                         row.col(|ui| { ui.label(&r.timestamp); });
@@ -1624,6 +2331,9 @@ impl App for GpsApp {
         if let Some(id) = open_map_request {
             self.open_map(&id);
         }
+
+        // ── SFTP browser window ───────────────────────────────────────────────
+        self.show_sftp_window(ctx);
 
         // ── Map pop-out windows ───────────────────────────────────────────────
         let open_ids: Vec<String> = self
@@ -1653,19 +2363,45 @@ impl App for GpsApp {
                 .min_size([400.0, 300.0])
                 .resizable(true)
                 .show(ctx, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.colored_label(Color32::GREEN, "●");
-                        ui.label("First fix");
-                        ui.separator();
-                        ui.colored_label(Color32::from_rgb(255, 140, 0), "●");
-                        ui.label("Intermediate");
-                        ui.separator();
-                        ui.colored_label(Color32::RED, "●");
-                        ui.label("Latest fix");
-                        ui.separator();
-                        ui.label(format!("{} fixes", pts.len()));
-                    });
-                    ui.separator();
+                    egui::Frame::none()
+                        .fill(CAT_SURFACE0)
+                        .rounding(egui::Rounding::same(6.0))
+                        .inner_margin(egui::Margin::symmetric(8.0, 4.0))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                egui::Frame::none()
+                                    .fill(CAT_GREEN)
+                                    .rounding(egui::Rounding::same(4.0))
+                                    .inner_margin(egui::Margin { left: 6.0, right: 6.0, top: 2.0, bottom: 2.0 })
+                                    .show(ui, |ui| {
+                                        ui.label(egui::RichText::new("Start").small().color(CAT_CRUST));
+                                    });
+                                ui.add_space(4.0);
+                                egui::Frame::none()
+                                    .fill(CAT_PEACH)
+                                    .rounding(egui::Rounding::same(4.0))
+                                    .inner_margin(egui::Margin { left: 6.0, right: 6.0, top: 2.0, bottom: 2.0 })
+                                    .show(ui, |ui| {
+                                        ui.label(egui::RichText::new("En Route").small().color(CAT_CRUST));
+                                    });
+                                ui.add_space(4.0);
+                                egui::Frame::none()
+                                    .fill(CAT_RED)
+                                    .rounding(egui::Rounding::same(4.0))
+                                    .inner_margin(egui::Margin { left: 6.0, right: 6.0, top: 2.0, bottom: 2.0 })
+                                    .show(ui, |ui| {
+                                        ui.label(egui::RichText::new("Latest").small().color(CAT_CRUST));
+                                    });
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    ui.label(
+                                        egui::RichText::new(format!("{} fixes", pts.len()))
+                                            .small()
+                                            .color(CAT_OVERLAY1),
+                                    );
+                                });
+                            });
+                        });
+                    ui.add_space(4.0);
 
                     let avail = ui.available_size();
                     ui.add_sized(
